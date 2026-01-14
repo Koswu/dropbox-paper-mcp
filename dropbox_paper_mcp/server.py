@@ -8,9 +8,11 @@ Exposes Dropbox Paper capabilities via MCP protocol:
 """
 
 import os
+from datetime import datetime
 
 import dropbox
-from dropbox.files import SearchOptions, FileCategory, ImportFormat
+from dropbox.files import SearchOptions, FileCategory, ImportFormat, SearchOrderBy
+import dropbox.paper
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
@@ -30,12 +32,21 @@ def get_dropbox_client() -> dropbox.Dropbox:
 
 
 @mcp.tool
-def paper_search(query: str, max_results: int = 20) -> str:
+def paper_search(
+    query: str,
+    path_scope: str | None = None,
+    order_by: str = "relevance",
+    modified_after: str | None = None,
+    max_results: int = 20,
+) -> str:
     """
     Search for Dropbox Paper documents.
 
     Args:
         query: Search keywords
+        path_scope: Optional path to limit search (e.g., "/Teams/Marketing")
+        order_by: Sort order: "relevance" (default) or "last_modified_time"
+        modified_after: Only return docs modified after this date (YYYY-MM-DD)
         max_results: Maximum number of results (default 20, max 100)
 
     Returns:
@@ -43,23 +54,57 @@ def paper_search(query: str, max_results: int = 20) -> str:
     """
     dbx = get_dropbox_client()
 
-    # Configure search options to filter for Paper documents
+    # Resolve order_by enum
+    if order_by == "last_modified_time":
+        order_arg = SearchOrderBy.last_modified_time
+    else:
+        order_arg = SearchOrderBy.relevance
+
+    # Configure search options
     options = SearchOptions(
+        path=path_scope,
         max_results=min(max_results, 100),
         file_categories=[FileCategory.paper],
+        order_by=order_arg,
     )
 
-    result = dbx.files_search_v2(query, options=options)
+    try:
+        # Parse date if provided
+        min_date = None
+        if modified_after:
+            try:
+                min_date = datetime.strptime(modified_after, "%Y-%m-%d")
+            except ValueError:
+                return "Error: modified_after must be in YYYY-MM-DD format"
 
-    if not result.matches:
-        return "No matching Paper documents found"
+        result = dbx.files_search_v2(query, options=options)
 
-    output = []
-    for match in result.matches:
-        metadata = match.metadata.get_metadata()
-        output.append(f"- **{metadata.name}**\n  Path: `{metadata.path_display}`")
+        if not result.matches:
+            return "No matching Paper documents found"
 
-    return f"Found {len(result.matches)} results:\n\n" + "\n".join(output)
+        output = []
+        count = 0
+        for match in result.matches:
+            metadata = match.metadata.get_metadata()
+            
+            # Apply date filter
+            if min_date and hasattr(metadata, "server_modified"):
+                # server_modified is usually naive datetime from dropbox sdk, but let's compare safely
+                # Dropbox SDK returns datetime objects. We assume they are comparable.
+                if metadata.server_modified < min_date:
+                    continue
+
+            output.append(
+                f"- **{metadata.name}**\n  Path: `{metadata.path_display}`\n  Modified: {metadata.server_modified}"
+            )
+            count += 1
+
+        if count == 0:
+            return f"Found matching docs, but none were modified after {modified_after}"
+
+        return f"Found {count} results:\n\n" + "\n".join(output)
+    except dropbox.exceptions.ApiError as e:
+        return f"Search failed: {e}"
 
 
 @mcp.tool
@@ -78,7 +123,7 @@ def paper_get_content(path: str) -> str:
     try:
         # Use files_export with markdown format
         result = dbx.files_export(path, export_format="markdown")
-        return result[1].text
+        return result[1].content.decode("utf-8")
     except dropbox.exceptions.ApiError as e:
         return f"Failed to get document content: {e}"
 
@@ -153,11 +198,19 @@ def paper_create(path: str, content: str) -> str:
 
 
 @mcp.tool
-def paper_list(limit: int = 50) -> str:
+def paper_list(
+    filter_by: str = "docs_accessed",
+    sort_by: str = "accessed",
+    sort_order: str = "descending",
+    limit: int = 50,
+) -> str:
     """
-    List all Paper documents.
+    List Paper documents.
 
     Args:
+        filter_by: Filter criteria. "docs_accessed" (default) or "docs_created".
+        sort_by: Sort field. "accessed" (default), "modified", or "created".
+        sort_order: Sort order. "descending" (default) or "ascending".
         limit: Maximum number of documents to return (default 50)
 
     Returns:
@@ -165,13 +218,37 @@ def paper_list(limit: int = 50) -> str:
     """
     dbx = get_dropbox_client()
 
+    # Resolve enums
+    filter_arg = (
+        dropbox.paper.ListPaperDocsFilterBy.docs_created
+        if filter_by == "docs_created"
+        else dropbox.paper.ListPaperDocsFilterBy.docs_accessed
+    )
+
+    sort_by_arg = getattr(
+        dropbox.paper.ListPaperDocsSortBy, sort_by, dropbox.paper.ListPaperDocsSortBy.accessed
+    )
+
+    sort_order_arg = (
+        dropbox.paper.ListPaperDocsSortOrder.ascending
+        if sort_order == "ascending"
+        else dropbox.paper.ListPaperDocsSortOrder.descending
+    )
+
     try:
-        result = dbx.paper_docs_list(limit=min(limit, 1000))
+        result = dbx.paper_docs_list(
+            filter_by=filter_arg,
+            sort_by=sort_by_arg,
+            sort_order=sort_order_arg,
+            limit=min(limit, 1000),
+        )
 
         if not result.doc_ids:
             return "No Paper documents found"
 
-        output = [f"Found {len(result.doc_ids)} Paper documents:\n"]
+        output = [
+            f"Found {len(result.doc_ids)} Paper documents (Filter: {filter_by}, Sort: {sort_by} {sort_order}):\n"
+        ]
         for doc_id in result.doc_ids[:limit]:
             output.append(f"- `{doc_id}`")
 
