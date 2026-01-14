@@ -13,6 +13,7 @@ from datetime import datetime
 import dropbox
 from dropbox.files import SearchOptions, FileCategory, ImportFormat, SearchOrderBy
 import dropbox.paper
+import dropbox.common
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
@@ -23,12 +24,35 @@ load_dotenv()
 mcp = FastMCP("Dropbox Paper MCP Server")
 
 
+# Global client cache
+_dbx_client_cache = None
+
+
 def get_dropbox_client() -> dropbox.Dropbox:
-    """Get authenticated Dropbox client."""
+    """Get authenticated Dropbox client with team root configured if applicable."""
+    global _dbx_client_cache
+    if _dbx_client_cache:
+        return _dbx_client_cache
+
     token = os.environ.get("DROPBOX_ACCESS_TOKEN")
     if not token:
         raise ValueError("DROPBOX_ACCESS_TOKEN environment variable is not set")
-    return dropbox.Dropbox(token)
+    
+    dbx = dropbox.Dropbox(token)
+
+    # Configure path root to access full team space if applicable
+    try:
+        account = dbx.users_get_current_account()
+        if account.root_info and account.root_info.root_namespace_id:
+            dbx = dbx.with_path_root(
+                dropbox.common.PathRoot.root(account.root_info.root_namespace_id)
+            )
+    except Exception:
+        # Fallback to default if we can't get account info or set root
+        pass
+
+    _dbx_client_cache = dbx
+    return dbx
 
 
 @mcp.tool
