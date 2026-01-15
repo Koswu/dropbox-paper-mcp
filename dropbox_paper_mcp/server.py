@@ -5,6 +5,7 @@ Exposes Dropbox Paper capabilities via MCP protocol:
 - Paper content viewing (markdown)
 - Paper metadata viewing
 - Create Paper from markdown
+- OAuth 2.0 authorization flow for obtaining refresh tokens
 """
 
 import os
@@ -12,6 +13,7 @@ from datetime import datetime
 
 import dropbox
 from dropbox.files import SearchOptions, FileCategory, ImportFormat, SearchOrderBy
+from dropbox.oauth import DropboxOAuth2FlowNoRedirect
 import dropbox.paper
 import dropbox.common
 from dotenv import load_dotenv
@@ -27,18 +29,43 @@ mcp = FastMCP("Dropbox Paper MCP Server")
 # Global client cache
 _dbx_client_cache = None
 
+# Global OAuth flow cache (for multi-step authorization)
+_oauth_flow_cache = None
+
 
 def get_dropbox_client() -> dropbox.Dropbox:
-    """Get authenticated Dropbox client with team root configured if applicable."""
+    """Get authenticated Dropbox client with team root configured if applicable.
+    
+    Supports two authentication modes:
+    1. Refresh token mode (recommended): Uses DROPBOX_REFRESH_TOKEN, DROPBOX_APP_KEY, 
+       and DROPBOX_APP_SECRET to automatically refresh access tokens.
+    2. Access token mode (legacy): Uses DROPBOX_ACCESS_TOKEN directly.
+    """
     global _dbx_client_cache
     if _dbx_client_cache:
         return _dbx_client_cache
 
-    token = os.environ.get("DROPBOX_ACCESS_TOKEN")
-    if not token:
-        raise ValueError("DROPBOX_ACCESS_TOKEN environment variable is not set")
+    # Try refresh token mode first (recommended)
+    refresh_token = os.environ.get("DROPBOX_REFRESH_TOKEN")
+    app_key = os.environ.get("DROPBOX_APP_KEY")
+    app_secret = os.environ.get("DROPBOX_APP_SECRET")
     
-    dbx = dropbox.Dropbox(token)
+    if refresh_token and app_key:
+        # Use refresh token - SDK will automatically handle token refresh
+        dbx = dropbox.Dropbox(
+            oauth2_refresh_token=refresh_token,
+            app_key=app_key,
+            app_secret=app_secret,  # Optional if using PKCE
+        )
+    else:
+        # Fall back to access token mode
+        token = os.environ.get("DROPBOX_ACCESS_TOKEN")
+        if not token:
+            raise ValueError(
+                "Either DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY, "
+                "or DROPBOX_ACCESS_TOKEN must be set"
+            )
+        dbx = dropbox.Dropbox(token)
 
     # Configure path root to access full team space if applicable
     try:
@@ -53,6 +80,113 @@ def get_dropbox_client() -> dropbox.Dropbox:
 
     _dbx_client_cache = dbx
     return dbx
+
+
+@mcp.tool
+def oauth_get_auth_url(app_key: str, app_secret: str | None = None) -> str:
+    """
+    Start OAuth 2.0 authorization flow and get the authorization URL.
+    
+    This is the first step to obtain a refresh token. After calling this tool:
+    1. Open the returned URL in a browser
+    2. Authorize the application
+    3. Copy the authorization code
+    4. Call oauth_exchange_code with the code to get your refresh token
+    
+    Args:
+        app_key: Your Dropbox app key (from https://www.dropbox.com/developers/apps)
+        app_secret: Your Dropbox app secret (optional if using PKCE)
+    
+    Returns:
+        Authorization URL to open in a browser
+    """
+    global _oauth_flow_cache
+    
+    # Create OAuth flow with offline access to get refresh token
+    _oauth_flow_cache = DropboxOAuth2FlowNoRedirect(
+        consumer_key=app_key,
+        consumer_secret=app_secret,
+        token_access_type='offline',  # This ensures we get a refresh token
+    )
+    
+    authorize_url = _oauth_flow_cache.start()
+    
+    return f"""## OAuth Authorization Flow Started
+
+**Step 1:** Open this URL in your browser:
+{authorize_url}
+
+**Step 2:** Authorize the application and copy the authorization code.
+
+**Step 3:** Call `oauth_exchange_code` with the authorization code to get your refresh token.
+
+> **Note:** The authorization code expires quickly, so complete step 3 promptly.
+"""
+
+
+@mcp.tool
+def oauth_exchange_code(authorization_code: str) -> str:
+    """
+    Exchange an authorization code for a refresh token.
+    
+    This is the second step of the OAuth flow. You must call oauth_get_auth_url first.
+    
+    Args:
+        authorization_code: The authorization code from Dropbox (copied from browser)
+    
+    Returns:
+        The refresh token and instructions for using it
+    """
+    global _oauth_flow_cache
+    
+    if not _oauth_flow_cache:
+        return """**Error:** No active OAuth flow found.
+
+Please call `oauth_get_auth_url` first to start the authorization flow.
+"""
+    
+    try:
+        oauth_result = _oauth_flow_cache.finish(authorization_code.strip())
+        
+        # Clear the flow cache
+        _oauth_flow_cache = None
+        
+        # Format the result
+        return f"""## OAuth Authorization Successful! 🎉
+
+**Your Refresh Token:**
+```
+{oauth_result.refresh_token}
+```
+
+**Your Access Token** (short-lived, for reference):
+```
+{oauth_result.access_token}
+```
+
+**Account ID:** {oauth_result.account_id}
+**Token Expiration:** {oauth_result.expires_at}
+
+---
+
+### How to Use
+
+Add these to your `.env` file:
+
+```bash
+DROPBOX_REFRESH_TOKEN={oauth_result.refresh_token}
+DROPBOX_APP_KEY=<your_app_key>
+DROPBOX_APP_SECRET=<your_app_secret>
+```
+
+You can remove the old `DROPBOX_ACCESS_TOKEN` line. The refresh token won't expire and the SDK will automatically refresh access tokens as needed.
+"""
+    except Exception as e:
+        _oauth_flow_cache = None
+        return f"""**Error exchanging authorization code:** {e}
+
+Please try again by calling `oauth_get_auth_url` to start a new flow.
+"""
 
 
 @mcp.tool

@@ -12,15 +12,39 @@ MCP server for Dropbox Paper built with [FastMCP](https://gofastmcp.com).
 | `paper_create` | Create new Paper from Markdown |
 | `paper_list` | List all Paper documents |
 | `list_folder` | List files and folders in a directory |
+| `oauth_get_auth_url` | Start OAuth flow (get authorization URL) |
+| `oauth_exchange_code` | Exchange auth code for refresh token |
 
 ## Configuration
 
-1. Create a `.env` file:
+### Option 1: Refresh Token (Recommended)
+
+Refresh tokens don't expire and the SDK auto-refreshes access tokens.
+
+1. Get your app credentials from [Dropbox Developers](https://www.dropbox.com/developers/apps)
+
+2. Use the OAuth tools to get a refresh token:
+   - Call `oauth_get_auth_url` with your app key
+   - Open the URL in browser and authorize
+   - Call `oauth_exchange_code` with the authorization code
+
+3. Create a `.env` file:
 ```bash
-DROPBOX_ACCESS_TOKEN=your_access_token_here
+DROPBOX_REFRESH_TOKEN=your_refresh_token
+DROPBOX_APP_KEY=your_app_key
+DROPBOX_APP_SECRET=your_app_secret
 ```
 
-2. Install dependencies:
+### Option 2: Access Token (Legacy)
+
+Short-lived tokens expire in ~4 hours.
+
+```bash
+DROPBOX_ACCESS_TOKEN=your_access_token
+```
+
+## Installation
+
 ```bash
 uv sync
 ```
@@ -37,11 +61,6 @@ uvx dropbox-paper-mcp
 uv run dropbox-paper-mcp
 ```
 
-Or:
-```bash
-uv run python main.py
-```
-
 ## MCP Client Configuration
 
 Add to Claude Desktop or other MCP clients:
@@ -53,7 +72,9 @@ Add to Claude Desktop or other MCP clients:
       "command": "uvx",
       "args": ["dropbox-paper-mcp"],
       "env": {
-        "DROPBOX_ACCESS_TOKEN": "your_token_here"
+        "DROPBOX_REFRESH_TOKEN": "your_refresh_token",
+        "DROPBOX_APP_KEY": "your_app_key",
+        "DROPBOX_APP_SECRET": "your_app_secret"
       }
     }
   }
