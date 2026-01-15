@@ -34,7 +34,7 @@ DROPBOX_REFRESH_TOKEN=your_refresh_token
 DROPBOX_APP_KEY=your_app_key
 DROPBOX_APP_SECRET=your_app_secret
 # Optional: Set default character limit for paper_get_content (default: 10000)
-PAPER_CONTENT_LIMIT=10000
+PAPER_CONTENT_DEFAULT_LIMIT=10000
 ```
 
 ### Option 2: Access Token (Legacy)
@@ -44,7 +44,7 @@ Short-lived tokens expire in ~4 hours.
 ```bash
 DROPBOX_ACCESS_TOKEN=your_access_token
 # Optional: Set default character limit for paper_get_content (default: 10000)
-PAPER_CONTENT_LIMIT=10000
+PAPER_CONTENT_DEFAULT_LIMIT=10000
 ```
 
 ## Installation
@@ -79,7 +79,7 @@ Add to Claude Desktop or other MCP clients:
         "DROPBOX_REFRESH_TOKEN": "your_refresh_token",
         "DROPBOX_APP_KEY": "your_app_key",
         "DROPBOX_APP_SECRET": "your_app_secret",
-        "PAPER_CONTENT_LIMIT": "10000"
+        "PAPER_CONTENT_DEFAULT_LIMIT": "10000"
       }
     }
   }
