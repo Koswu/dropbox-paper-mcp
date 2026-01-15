@@ -274,7 +274,8 @@ def paper_get_content(path: str, limit: int | None = None) -> str:
         path: Path to the Paper document, e.g. "/Documents/my_paper.paper"
         limit: Maximum number of characters to return. If None, uses PAPER_CONTENT_DEFAULT_LIMIT 
                environment variable (default: 10000). A default limit is enforced to help 
-               avoid unintentional token exhaustion, but can be overridden via this parameter.
+               avoid unintentional token exhaustion. Pass an explicit limit value to override 
+               the default.
 
     Returns:
         Paper document content in Markdown format, truncated if exceeds limit
