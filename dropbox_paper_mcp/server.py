@@ -273,8 +273,8 @@ def paper_get_content(path: str, limit: int | None = None) -> str:
     Args:
         path: Path to the Paper document, e.g. "/Documents/my_paper.paper"
         limit: Maximum number of characters to return. If None, uses PAPER_CONTENT_LIMIT 
-               environment variable (default: 10000). To avoid token exhaustion, a limit 
-               is always enforced.
+               environment variable (default: 10000). A default limit is enforced to help 
+               avoid unintentional token exhaustion, but can be overridden via this parameter.
 
     Returns:
         Paper document content in Markdown format, truncated if exceeds limit
@@ -283,7 +283,10 @@ def paper_get_content(path: str, limit: int | None = None) -> str:
 
     # Get limit from parameter or environment variable
     if limit is None:
-        limit = int(os.environ.get("PAPER_CONTENT_LIMIT", "10000"))
+        try:
+            limit = int(os.environ.get("PAPER_CONTENT_LIMIT", "10000"))
+        except ValueError:
+            return "Error: PAPER_CONTENT_LIMIT environment variable must be a valid integer"
     
     # Ensure limit is positive
     if limit <= 0:
