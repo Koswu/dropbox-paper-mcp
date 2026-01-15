@@ -266,22 +266,54 @@ def paper_search(
 
 
 @mcp.tool
-def paper_get_content(path: str) -> str:
+def paper_get_content(path: str, limit: int | None = None) -> str:
     """
     Get Paper document content in Markdown format.
 
     Args:
         path: Path to the Paper document, e.g. "/Documents/my_paper.paper"
+        limit: Maximum number of characters to return. If None, uses PAPER_CONTENT_DEFAULT_LIMIT 
+               environment variable (default: 10000). A default limit is enforced to help 
+               avoid unintentional token exhaustion. Pass an explicit limit value to override 
+               the default.
 
     Returns:
-        Paper document content in Markdown format
+        Paper document content in Markdown format, truncated if exceeds limit
     """
     dbx = get_dropbox_client()
+
+    # Get limit from parameter or environment variable
+    if limit is None:
+        try:
+            limit = int(os.environ.get("PAPER_CONTENT_DEFAULT_LIMIT", "10000"))
+        except ValueError:
+            return "Error: PAPER_CONTENT_DEFAULT_LIMIT environment variable must be a valid integer"
+    
+    # Ensure limit is positive
+    if limit <= 0:
+        return "Error: limit must be a positive integer"
 
     try:
         # Use files_export with markdown format
         result = dbx.files_export(path, export_format="markdown")
-        return result[1].content.decode("utf-8")
+        content = result[1].content.decode("utf-8")
+        
+        total_length = len(content)
+        
+        # Check if content exceeds limit
+        if total_length > limit:
+            truncated_content = content[:limit]
+            suggested_limit = min(total_length, limit * 2)
+            return f"""{truncated_content}
+
+--- Content Truncated ---
+Total content length: {total_length} characters
+Returned: {limit} characters
+To see more content, call paper_get_content again with a larger limit parameter.
+Example: paper_get_content(path="{path}", limit={suggested_limit})
+"""
+        
+        return content
     except dropbox.exceptions.ApiError as e:
         return f"Failed to get document content: {e}"
 
