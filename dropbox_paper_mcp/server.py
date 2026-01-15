@@ -303,13 +303,14 @@ def paper_get_content(path: str, limit: int | None = None) -> str:
         # Check if content exceeds limit
         if total_length > limit:
             truncated_content = content[:limit]
+            suggested_limit = min(total_length, limit * 2)
             return f"""{truncated_content}
 
 --- Content Truncated ---
 Total content length: {total_length} characters
 Returned: {limit} characters
-To see the full content, call paper_get_content again with a larger limit parameter.
-Example: paper_get_content(path="{path}", limit={total_length})
+To see more content, call paper_get_content again with a larger limit parameter.
+Example: paper_get_content(path="{path}", limit={suggested_limit})
 """
         
         return content
