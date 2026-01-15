@@ -78,7 +78,8 @@ Add to Claude Desktop or other MCP clients:
       "env": {
         "DROPBOX_REFRESH_TOKEN": "your_refresh_token",
         "DROPBOX_APP_KEY": "your_app_key",
-        "DROPBOX_APP_SECRET": "your_app_secret"
+        "DROPBOX_APP_SECRET": "your_app_secret",
+        "PAPER_CONTENT_LIMIT": "10000"
       }
     }
   }
