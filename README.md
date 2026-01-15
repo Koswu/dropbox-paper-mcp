@@ -7,7 +7,7 @@ MCP server for Dropbox Paper built with [FastMCP](https://gofastmcp.com).
 | Tool | Description |
 |------|-------------|
 | `paper_search` | Search Paper documents |
-| `paper_get_content` | Get Paper content (Markdown format) |
+| `paper_get_content` | Get Paper content (Markdown format) with optional character limit |
 | `paper_get_metadata` | Get Paper metadata |
 | `paper_create` | Create new Paper from Markdown |
 | `paper_list` | List all Paper documents |
@@ -33,6 +33,8 @@ Refresh tokens don't expire and the SDK auto-refreshes access tokens.
 DROPBOX_REFRESH_TOKEN=your_refresh_token
 DROPBOX_APP_KEY=your_app_key
 DROPBOX_APP_SECRET=your_app_secret
+# Optional: Set default character limit for paper_get_content (default: 10000)
+PAPER_CONTENT_LIMIT=10000
 ```
 
 ### Option 2: Access Token (Legacy)
@@ -41,6 +43,8 @@ Short-lived tokens expire in ~4 hours.
 
 ```bash
 DROPBOX_ACCESS_TOKEN=your_access_token
+# Optional: Set default character limit for paper_get_content (default: 10000)
+PAPER_CONTENT_LIMIT=10000
 ```
 
 ## Installation
