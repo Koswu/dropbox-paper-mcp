@@ -102,20 +102,56 @@ def get_dropbox_client() -> dropbox.Dropbox:
     return dbx
 
 
+def _extract_paper_doc_id_from_url(url: str) -> str | None:
+    """
+    Extract Paper document ID from a paper.dropbox.com URL.
+    
+    Paper URLs have format: https://paper.dropbox.com/doc/TITLE-DOCID
+    Where DOCID is an alphanumeric string at the end after the last hyphen.
+    
+    Args:
+        url: URL to extract doc ID from
+        
+    Returns:
+        The document ID if found, None otherwise
+    """
+    # Strip URL fragment first
+    url_without_fragment = re.sub(r"#.*$", "", url)
+    
+    # Match paper.dropbox.com/doc/TITLE-DOCID pattern
+    match = re.search(r"paper\.dropbox\.com/doc/[^/]*-([a-zA-Z0-9]+)$", url_without_fragment)
+    if match:
+        return match.group(1)
+    return None
+
+
 def _resolve_path(dbx: dropbox.Dropbox, path_or_url: str) -> str:
     """
     Resolve a path or shared link URL to a file ID or path.
     
-    If input matches ^https?://, it treats it as a shared link URL,
-    resolves it to a File ID using sharing_get_shared_link_metadata.
+    Handles three cases:
+    1. Paper URLs (paper.dropbox.com/doc/...) - returns "paper:<doc_id>" for special handling
+    2. Regular Dropbox shared links - resolves to file ID via sharing API
+    3. Regular paths - returned as-is
     
-    Otherwise returns the input as-is.
+    Note: URL fragments (the # portion) are stripped before resolving,
+    as Dropbox Paper uses special fragment formats like #:uid=...&h2=...
+    for section anchors that the APIs don't understand.
     """
     # Check if input looks like a URL
     if re.match(r"^https?://", path_or_url):
+        # Check if it's a Paper URL first (paper.dropbox.com/doc/...)
+        paper_doc_id = _extract_paper_doc_id_from_url(path_or_url)
+        if paper_doc_id:
+            # Return with special prefix to indicate this is a Paper doc ID
+            return f"paper:{paper_doc_id}"
+        
         try:
-            # Resolve shared link
-            metadata = dbx.sharing_get_shared_link_metadata(url=path_or_url)
+            # Strip URL fragment (everything after #) before resolving
+            url_without_fragment = re.sub(r"#.*$", "", path_or_url)
+            
+            # Resolve shared link via sharing API
+            metadata = dbx.sharing_get_shared_link_metadata(url=url_without_fragment)
             metadata = cast(SharedLinkMetadata, metadata)  
 
             if isinstance(metadata, FileLinkMetadata):
@@ -379,13 +415,24 @@ def paper_get_content(path: str, limit: int | None = None) -> str:
         except ValueError as e:
             return f"Error resolving path: {e}"
 
-        # Use files_export with markdown format
-        result = dbx.files_export(resolved_path, export_format="markdown")
-        result = cast(  
-            tuple[ExportResult, Any],
-            result
-        )  
-        content = result[1].content.decode("utf-8")
+        # Check if this is a Paper doc ID (from paper.dropbox.com URL)
+        if resolved_path.startswith("paper:"):
+            paper_doc_id = resolved_path[6:]  # Remove "paper:" prefix
+            # Use paper_docs_download API for Paper doc IDs
+            result = dbx.paper_docs_download(
+                paper_doc_id, 
+                dropbox.paper.ExportFormat.markdown
+            )
+            # result is a tuple of (PaperDocExportResult, Response)
+            content = result[1].content.decode("utf-8")
+        else:
+            # Use files_export with markdown format for regular paths/file IDs
+            result = dbx.files_export(resolved_path, export_format="markdown")
+            result = cast(  
+                tuple[ExportResult, Any],
+                result
+            )  
+            content = result[1].content.decode("utf-8")
 
         total_length = len(content)
 
@@ -426,6 +473,25 @@ def paper_get_metadata(path: str) -> str:
             resolved_path = _resolve_path(dbx, path)
         except ValueError as e:
             return f"Error resolving path: {e}"
+
+        # Check if this is a Paper doc ID (from paper.dropbox.com URL)
+        if resolved_path.startswith("paper:"):
+            paper_doc_id = resolved_path[6:]  # Remove "paper:" prefix
+            # Use paper_docs API for Paper doc IDs
+            # paper_docs_download gives us basic metadata in the result
+            result = dbx.paper_docs_download(
+                paper_doc_id,
+                dropbox.paper.ExportFormat.markdown
+            )
+            export_result = result[0]  # PaperDocExportResult
+            info = [
+                f"**Title**: {export_result.title}",
+                f"**Owner**: {export_result.owner}",
+                f"**Revision**: {export_result.revision}",
+                f"**MIME Type**: {export_result.mime_type}",
+                f"**Paper Doc ID**: {paper_doc_id}",
+            ]
+            return "\n".join(info)
 
         metadata = dbx.files_get_metadata(resolved_path)
         metadata = cast(Metadata, metadata) 
