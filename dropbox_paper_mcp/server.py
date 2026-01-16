@@ -29,8 +29,11 @@ from dropbox.files import (
     PaperCreateResult,
 )
 from dropbox.oauth import DropboxOAuth2FlowNoRedirect
+import re
 import dropbox.paper
 from dropbox.paper import ListPaperDocsResponse
+import dropbox.sharing
+from dropbox.sharing import SharedLinkMetadata, FileLinkMetadata, FolderLinkMetadata
 import dropbox.common
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -97,6 +100,39 @@ def get_dropbox_client() -> dropbox.Dropbox:
 
     _dbx_client_cache = dbx
     return dbx
+
+
+def _resolve_path(dbx: dropbox.Dropbox, path_or_url: str) -> str:
+    """
+    Resolve a path or shared link URL to a file ID or path.
+    
+    If input matches ^https?://, it treats it as a shared link URL,
+    resolves it to a File ID using sharing_get_shared_link_metadata.
+    
+    Otherwise returns the input as-is.
+    """
+    # Check if input looks like a URL
+    if re.match(r"^https?://", path_or_url):
+        try:
+            # Resolve shared link
+            metadata = dbx.sharing_get_shared_link_metadata(url=path_or_url)
+            metadata = cast(SharedLinkMetadata, metadata)  
+
+            if isinstance(metadata, FileLinkMetadata):
+                # For files, return the ID which can be used in place of path
+                return metadata.id
+            elif isinstance(metadata, FolderLinkMetadata):
+                raise ValueError("Shared link points to a folder, but a file is required.")
+            else:
+                # Fallback for other types or bare SharedLinkMetadata
+                if hasattr(metadata, "id") and metadata.id:
+                    return metadata.id
+                raise ValueError(f"Could not resolve file ID from shared link: {metadata}")
+                
+        except dropbox.exceptions.ApiError as e:
+            raise ValueError(f"Failed to resolve shared link: {e}")
+            
+    return path_or_url
 
 
 @mcp.tool
@@ -314,7 +350,7 @@ def paper_get_content(path: str, limit: int | None = None) -> str:
     Get Paper document content in Markdown format.
 
     Args:
-        path: Path to the Paper document, e.g. "/Documents/my_paper.paper"
+        path: Path to the Paper document (e.g. "/Documents/my_paper.paper") OR a shared link URL.
         limit: Maximum number of characters to return. If None, uses PAPER_CONTENT_DEFAULT_LIMIT
                environment variable (default: 10000). A default limit is enforced to help
                avoid unintentional token exhaustion. Pass an explicit limit value to override
@@ -337,9 +373,15 @@ def paper_get_content(path: str, limit: int | None = None) -> str:
         return "Error: limit must be a positive integer"
 
     try:
+        # Resolve path if it's a URL
+        try:
+            resolved_path = _resolve_path(dbx, path)
+        except ValueError as e:
+            return f"Error resolving path: {e}"
+
         # Use files_export with markdown format
-        result = dbx.files_export(path, export_format="markdown"),
-        result = cast(
+        result = dbx.files_export(resolved_path, export_format="markdown")
+        result = cast(  
             tuple[ExportResult, Any],
             result
         )  
@@ -371,7 +413,7 @@ def paper_get_metadata(path: str) -> str:
     Get Paper document metadata.
 
     Args:
-        path: Path to the Paper document, e.g. "/Documents/my_paper.paper"
+        path: Path to the Paper document (e.g. "/Documents/my_paper.paper") OR a shared link URL.
 
     Returns:
         Document metadata including name, size, modification time, etc.
@@ -379,8 +421,14 @@ def paper_get_metadata(path: str) -> str:
     dbx = get_dropbox_client()
 
     try:
-        metadata = dbx.files_get_metadata(path)
-        metadata = cast(Metadata, metadata) # type: ignore  # pyright: ignore[reportInvalidCast]
+        # Resolve path if it's a URL
+        try:
+            resolved_path = _resolve_path(dbx, path)
+        except ValueError as e:
+            return f"Error resolving path: {e}"
+
+        metadata = dbx.files_get_metadata(resolved_path)
+        metadata = cast(Metadata, metadata) 
 
         info = [
             f"**Name**: {metadata.name}",
@@ -431,7 +479,7 @@ def paper_create(path: str, content: str) -> str:
             path,
             ImportFormat.markdown,
         )
-        result = cast(  # pyright: ignore[reportInvalidCast]
+        result = cast(  
             PaperCreateResult,
             result,
         ) 
@@ -489,7 +537,7 @@ def paper_list(
             sort_order=sort_order_arg,
             limit=min(limit, 1000),
         )
-        result = cast(ListPaperDocsResponse,result)  # type: ignore  # pyright: ignore[reportInvalidCast]
+        result = cast(ListPaperDocsResponse,result)  
 
         if not result.doc_ids:
             return "No Paper documents found"
@@ -520,7 +568,7 @@ def list_folder(path: str = "") -> str:
     dbx = get_dropbox_client()
 
     try:
-        result = cast(ListFolderResult, dbx.files_list_folder(path))  # type: ignore  # pyright: ignore[reportInvalidCast]
+        result = cast(ListFolderResult, dbx.files_list_folder(path))  
 
         if not result.entries:
             return "Folder is empty"

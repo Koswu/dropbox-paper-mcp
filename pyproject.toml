@@ -43,3 +43,4 @@ reportUnusedImport = false
 reportInvalidAbstractMethod = false
 reportIncompatibleMethodOverride = false
 reportImplicitOverride = false
+reportInvalidCast = false
