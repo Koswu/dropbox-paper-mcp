@@ -16,3 +16,30 @@ dropbox-paper-mcp = "dropbox_paper_mcp.__main__:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.37.1",
+    "ruff>=0.14.13",
+]
+
+[tool.basedpyright]
+reportAny = false
+reportExplicitAny = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportOptionalSubscript = true
+reportOptionalMemberAccess = true
+reportImplicitStringConcatenation = false
+reportUnannotatedClassAttribute = false
+reportUnknownParameterType = false
+reportMissingParameterType = false
+reportMissingTypeStubs = false
+reportImportCycles = false
+reportUnusedCallResult = false
+reportAttributeAccessIssue = true
+reportUnusedImport = false
+reportInvalidAbstractMethod = false
+reportIncompatibleMethodOverride = false
+reportImplicitOverride = false

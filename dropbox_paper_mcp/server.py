@@ -10,11 +10,27 @@ Exposes Dropbox Paper capabilities via MCP protocol:
 
 import os
 from datetime import datetime
+from typing import Any, cast
 
 import dropbox
-from dropbox.files import SearchOptions, FileCategory, ImportFormat, SearchOrderBy
+import dropbox.exceptions
+import dropbox.files
+from dropbox.files import (
+    SearchOptions,
+    FileCategory,
+    ImportFormat,
+    SearchOrderBy,
+    SearchV2Result,
+    FileMetadata,
+    FolderMetadata,
+    ListFolderResult,
+    Metadata,
+    ExportResult,
+    PaperCreateResult,
+)
 from dropbox.oauth import DropboxOAuth2FlowNoRedirect
 import dropbox.paper
+from dropbox.paper import ListPaperDocsResponse
 import dropbox.common
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -27,17 +43,17 @@ mcp = FastMCP("Dropbox Paper MCP Server")
 
 
 # Global client cache
-_dbx_client_cache = None
+_dbx_client_cache: dropbox.Dropbox | None = None
 
 # Global OAuth flow cache (for multi-step authorization)
-_oauth_flow_cache = None
+_oauth_flow_cache: DropboxOAuth2FlowNoRedirect | None = None
 
 
 def get_dropbox_client() -> dropbox.Dropbox:
     """Get authenticated Dropbox client with team root configured if applicable.
-    
+
     Supports two authentication modes:
-    1. Refresh token mode (recommended): Uses DROPBOX_REFRESH_TOKEN, DROPBOX_APP_KEY, 
+    1. Refresh token mode (recommended): Uses DROPBOX_REFRESH_TOKEN, DROPBOX_APP_KEY,
        and DROPBOX_APP_SECRET to automatically refresh access tokens.
     2. Access token mode (legacy): Uses DROPBOX_ACCESS_TOKEN directly.
     """
@@ -49,7 +65,7 @@ def get_dropbox_client() -> dropbox.Dropbox:
     refresh_token = os.environ.get("DROPBOX_REFRESH_TOKEN")
     app_key = os.environ.get("DROPBOX_APP_KEY")
     app_secret = os.environ.get("DROPBOX_APP_SECRET")
-    
+
     if refresh_token and app_key:
         # Use refresh token - SDK will automatically handle token refresh
         dbx = dropbox.Dropbox(
@@ -70,6 +86,7 @@ def get_dropbox_client() -> dropbox.Dropbox:
     # Configure path root to access full team space if applicable
     try:
         account = dbx.users_get_current_account()
+        assert account
         if account.root_info and account.root_info.root_namespace_id:
             dbx = dbx.with_path_root(
                 dropbox.common.PathRoot.root(account.root_info.root_namespace_id)
@@ -86,31 +103,31 @@ def get_dropbox_client() -> dropbox.Dropbox:
 def oauth_get_auth_url(app_key: str, app_secret: str | None = None) -> str:
     """
     Start OAuth 2.0 authorization flow and get the authorization URL.
-    
+
     This is the first step to obtain a refresh token. After calling this tool:
     1. Open the returned URL in a browser
     2. Authorize the application
     3. Copy the authorization code
     4. Call oauth_exchange_code with the code to get your refresh token
-    
+
     Args:
         app_key: Your Dropbox app key (from https://www.dropbox.com/developers/apps)
         app_secret: Your Dropbox app secret (optional if using PKCE)
-    
+
     Returns:
         Authorization URL to open in a browser
     """
     global _oauth_flow_cache
-    
+
     # Create OAuth flow with offline access to get refresh token
     _oauth_flow_cache = DropboxOAuth2FlowNoRedirect(
         consumer_key=app_key,
         consumer_secret=app_secret,
-        token_access_type='offline',  # This ensures we get a refresh token
+        token_access_type="offline",  # This ensures we get a refresh token
     )
-    
+
     authorize_url = _oauth_flow_cache.start()
-    
+
     return f"""## OAuth Authorization Flow Started
 
 **Step 1:** Open this URL in your browser:
@@ -128,29 +145,29 @@ def oauth_get_auth_url(app_key: str, app_secret: str | None = None) -> str:
 def oauth_exchange_code(authorization_code: str) -> str:
     """
     Exchange an authorization code for a refresh token.
-    
+
     This is the second step of the OAuth flow. You must call oauth_get_auth_url first.
-    
+
     Args:
         authorization_code: The authorization code from Dropbox (copied from browser)
-    
+
     Returns:
         The refresh token and instructions for using it
     """
     global _oauth_flow_cache
-    
+
     if not _oauth_flow_cache:
         return """**Error:** No active OAuth flow found.
 
 Please call `oauth_get_auth_url` first to start the authorization flow.
 """
-    
+
     try:
         oauth_result = _oauth_flow_cache.finish(authorization_code.strip())
-        
+
         # Clear the flow cache
         _oauth_flow_cache = None
-        
+
         # Format the result
         return f"""## OAuth Authorization Successful! 🎉
 
@@ -234,8 +251,13 @@ def paper_search(
                 min_date = datetime.strptime(modified_after, "%Y-%m-%d")
             except ValueError:
                 return "Error: modified_after must be in YYYY-MM-DD format"
-
+        
         result = dbx.files_search_v2(query, options=options)
+        assert result
+
+        result = cast(
+            SearchV2Result, result
+        )  
 
         if not result.matches:
             return "No matching Paper documents found"
@@ -243,17 +265,38 @@ def paper_search(
         output = []
         count = 0
         for match in result.matches:
-            metadata = match.metadata.get_metadata()
-            
+            # match.metadata is a metadata wrapper (SearchMatchV2), get_metadata() returns the actual Metadata object
+            # The stub returns None, so we ignore the type error when casting
+            match_meta_wrapper = match.metadata
+            # Verify we have a metadata wrapper before calling get_metadata
+            if not match_meta_wrapper:
+                continue
+                
+            metadata = cast(Metadata, match_meta_wrapper.get_metadata())  # type: ignore
+
             # Apply date filter
-            if min_date and hasattr(metadata, "server_modified"):
+            if min_date:
                 # server_modified is usually naive datetime from dropbox sdk, but let's compare safely
                 # Dropbox SDK returns datetime objects. We assume they are comparable.
-                if metadata.server_modified < min_date:
+                if isinstance(metadata, FileMetadata) and metadata.server_modified < min_date:
                     continue
+                elif not isinstance(metadata, FileMetadata):
+                    # If it's not a file (e.g. folder), skip if we needed to filter by date?
+                    # Or valid to include? Original code checked hasattr(metadata, "server_modified")
+                    # FolderMetadata usually doesn't have server_modified.
+                    pass
 
+            # Prepare display strings
+            # Name and Path are common to Metadata (FileMetadata/FolderMetadata)
+            # but strict typing might need narrowing or access on Metadata if common fields are defined there.
+            # Metadata in stubs has 'name', 'path_display'.
+            
+            modified_str = "N/A"
+            if isinstance(metadata, FileMetadata):
+                modified_str = str(metadata.server_modified)
+            
             output.append(
-                f"- **{metadata.name}**\n  Path: `{metadata.path_display}`\n  Modified: {metadata.server_modified}"
+                f"- **{metadata.name}**\n  Path: `{metadata.path_display}`\n  Modified: {modified_str}"
             )
             count += 1
 
@@ -272,9 +315,9 @@ def paper_get_content(path: str, limit: int | None = None) -> str:
 
     Args:
         path: Path to the Paper document, e.g. "/Documents/my_paper.paper"
-        limit: Maximum number of characters to return. If None, uses PAPER_CONTENT_DEFAULT_LIMIT 
-               environment variable (default: 10000). A default limit is enforced to help 
-               avoid unintentional token exhaustion. Pass an explicit limit value to override 
+        limit: Maximum number of characters to return. If None, uses PAPER_CONTENT_DEFAULT_LIMIT
+               environment variable (default: 10000). A default limit is enforced to help
+               avoid unintentional token exhaustion. Pass an explicit limit value to override
                the default.
 
     Returns:
@@ -288,18 +331,22 @@ def paper_get_content(path: str, limit: int | None = None) -> str:
             limit = int(os.environ.get("PAPER_CONTENT_DEFAULT_LIMIT", "10000"))
         except ValueError:
             return "Error: PAPER_CONTENT_DEFAULT_LIMIT environment variable must be a valid integer"
-    
+
     # Ensure limit is positive
     if limit <= 0:
         return "Error: limit must be a positive integer"
 
     try:
         # Use files_export with markdown format
-        result = dbx.files_export(path, export_format="markdown")
+        result = dbx.files_export(path, export_format="markdown"),
+        result = cast(
+            tuple[ExportResult, Any],
+            result
+        )  
         content = result[1].content.decode("utf-8")
-        
+
         total_length = len(content)
-        
+
         # Check if content exceeds limit
         if total_length > limit:
             truncated_content = content[:limit]
@@ -312,7 +359,7 @@ Returned: {limit} characters
 To see more content, call paper_get_content again with a larger limit parameter.
 Example: paper_get_content(path="{path}", limit={suggested_limit})
 """
-        
+
         return content
     except dropbox.exceptions.ApiError as e:
         return f"Failed to get document content: {e}"
@@ -333,22 +380,26 @@ def paper_get_metadata(path: str) -> str:
 
     try:
         metadata = dbx.files_get_metadata(path)
+        metadata = cast(Metadata, metadata) # type: ignore  # pyright: ignore[reportInvalidCast]
 
         info = [
             f"**Name**: {metadata.name}",
             f"**Path**: {metadata.path_display}",
-            f"**ID**: {metadata.id}",
         ]
 
+        if isinstance(metadata, (FileMetadata, FolderMetadata)):
+             info.append(f"**ID**: {metadata.id}")
+        else:
+             # Fallback or unknown metadata type
+             info.append(f"**ID**: Unknown ({type(metadata).__name__})")
+
         # FileMetadata specific fields
-        if hasattr(metadata, "size"):
+        if isinstance(metadata, FileMetadata):
             info.append(f"**Size**: {metadata.size} bytes")
-        if hasattr(metadata, "client_modified"):
             info.append(f"**Client Modified**: {metadata.client_modified}")
-        if hasattr(metadata, "server_modified"):
             info.append(f"**Server Modified**: {metadata.server_modified}")
-        if hasattr(metadata, "content_hash"):
-            info.append(f"**Content Hash**: {metadata.content_hash}")
+            if metadata.content_hash:
+                 info.append(f"**Content Hash**: {metadata.content_hash}")
 
         return "\n".join(info)
 
@@ -380,6 +431,10 @@ def paper_create(path: str, content: str) -> str:
             path,
             ImportFormat.markdown,
         )
+        result = cast(  # pyright: ignore[reportInvalidCast]
+            PaperCreateResult,
+            result,
+        ) 
 
         return f"Paper document created successfully!\n\n**Path**: {result.url}\n**File ID**: {result.result_path}"
 
@@ -416,7 +471,9 @@ def paper_list(
     )
 
     sort_by_arg = getattr(
-        dropbox.paper.ListPaperDocsSortBy, sort_by, dropbox.paper.ListPaperDocsSortBy.accessed
+        dropbox.paper.ListPaperDocsSortBy,
+        sort_by,
+        dropbox.paper.ListPaperDocsSortBy.accessed,
     )
 
     sort_order_arg = (
@@ -432,6 +489,7 @@ def paper_list(
             sort_order=sort_order_arg,
             limit=min(limit, 1000),
         )
+        result = cast(ListPaperDocsResponse,result)  # type: ignore  # pyright: ignore[reportInvalidCast]
 
         if not result.doc_ids:
             return "No Paper documents found"
@@ -462,7 +520,7 @@ def list_folder(path: str = "") -> str:
     dbx = get_dropbox_client()
 
     try:
-        result = dbx.files_list_folder(path)
+        result = cast(ListFolderResult, dbx.files_list_folder(path))  # type: ignore  # pyright: ignore[reportInvalidCast]
 
         if not result.entries:
             return "Folder is empty"
@@ -480,4 +538,3 @@ def list_folder(path: str = "") -> str:
 
     except dropbox.exceptions.ApiError as e:
         return f"Failed to list folder: {e}"
-
