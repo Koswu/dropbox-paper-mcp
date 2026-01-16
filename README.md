@@ -91,3 +91,4 @@ Add to Claude Desktop or other MCP clients:
 - `files.metadata.read` - Search and metadata
 - `files.content.read` - Get document content
 - `files.content.write` - Create new documents (optional)
+- `sharing.read` - Resolve shared links (required for using shared links as input)
